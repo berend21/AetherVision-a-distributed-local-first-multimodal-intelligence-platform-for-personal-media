@@ -22,13 +22,6 @@ Start page
 <img width="1898" height="900" alt="Screenshot 2026-10-16 095923" src="https://github.com/user-attachments/assets/816c2be0-24f8-49e6-ab4e-7f5d5eb109c4" />
 Map with image locations
 <img width="1898" height="910" alt="Screenshot 2026-10-15 212452" src="https://github.com/user-attachments/assets/2793afb5-b07e-4b93-8438-84c9bd4e28fa" />
-Searching 'electrical'
-<img width="1916" height="775" alt="Screenshot 2026-08-11 143527" src="https://github.com/user-attachments/assets/5b92c4a0-7b69-42c4-8540-bef38b5fb8a8" />
-Searching 'bicycle'
-<img width="1915" height="776" alt="Screenshot 2026-08-11 143602" src="https://github.com/user-attachments/assets/aa727074-43c3-4a72-a9da-210258202f9a" />
-Searching 'tree'
-<img width="1914" height="545" alt="Screenshot 2026-08-11 143817" src="https://github.com/user-attachments/assets/c88639f0-3955-4377-b54a-8ed38ea4e6b3" />
-
 
 ## Why ImageviewerAI?
 
@@ -228,10 +221,12 @@ If you need remote access, put ImageviewerAI behind appropriate
 authentication and network controls.
 
 
-Clicking on imges opens modal with all information and coordinates are clickable to google maps location.
-<img width="1919" height="915" alt="Screenshot 2026-08-12 141808" src="https://github.com/user-attachments/assets/32ac1301-3f51-4456-abde-3fda20e0ccfa" />
-
-<img width="1459" height="867" alt="Screenshot 2026-08-11 144051" src="https://github.com/user-attachments/assets/0179f613-ea30-4949-8fb0-8ce5639c572e" />
+Searching 'electrical'
+<img width="1916" height="775" alt="Screenshot 2026-08-11 143527" src="https://github.com/user-attachments/assets/5b92c4a0-7b69-42c4-8540-bef38b5fb8a8" />
+Searching 'bicycle'
+<img width="1915" height="776" alt="Screenshot 2026-08-11 143602" src="https://github.com/user-attachments/assets/aa727074-43c3-4a72-a9da-210258202f9a" />
+Searching 'tree'
+<img width="1914" height="545" alt="Screenshot 2026-08-11 143817" src="https://github.com/user-attachments/assets/c88639f0-3955-4377-b54a-8ed38ea4e6b3" />
 
 ## Project status
 
