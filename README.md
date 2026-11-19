@@ -42,7 +42,7 @@ No cloud upload. No AI API key. No subscription.
 
 ## Features
 
-### 📁 Photo library
+### Photo library
 
 - Index existing folders without moving your files
 - Recursive directory scanning
@@ -53,7 +53,7 @@ No cloud upload. No AI API key. No subscription.
 - Automatic thumbnails
 - Large-library browsing
 
-### 🤖 Local AI
+### Local AI
 
 - Automatic image tagging
 - Semantic embeddings
@@ -63,7 +63,7 @@ No cloud upload. No AI API key. No subscription.
 - Background processing
 - GPU acceleration when available
 
-### 🔎 Search
+### Search
 
 Search across:
 
@@ -76,7 +76,7 @@ Search across:
 - OCR text
 - semantic embeddings
 
-### 🔐 Privacy
+### Privacy
 
 - Photos remain in their original locations
 - AI processing runs locally
