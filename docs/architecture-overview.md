@@ -1,10 +1,6 @@
 
 # AetherVision — Architecture Overview
 
-**Document status:** Living document  
-**Architecture classification:** Local-first modular application, evolving toward distributed multimodal processing  
-**Last reviewed:** 2026-11-19
-
 ## 1. Introduction
 
 AetherVision is a local-first multimodal intelligence platform designed to transform personal media collections into searchable, contextual and interconnected knowledge.
