@@ -1,9 +1,22 @@
-# ImageviewerAI
-### 🔎 Search your personal photo library with local AI
+# AetherVision
+## A Local-First Multimodal Intelligence Platform for Personal Media
+AetherVision is an evolving personal media intelligence platform designed to transform heterogeneous media collections into searchable, contextual and interconnected knowledge.
 
-ImageviewerAI is a privacy-first, self-hosted photo browser that brings
-AI-powered search to your existing image folders — without uploading
-your photos to the cloud.
+The platform combines local media ingestion, metadata extraction, computer vision, multimodal AI inference and semantic retrieval to make personal media collections easier to explore, understand and connect.
+
+Core principles
+- Local-first: Personal media and derived data remain under user-controlled infrastructure.
+- Privacy-oriented: AI processing is designed to operate locally without requiring external AI services.
+- Resource-aware: Processing workloads account for available CPU, GPU, memory and storage resources.
+- Incremental: Media collections can be indexed and enriched progressively.
+- Extensible: Processing capabilities and inference models should evolve independently of the user-facing application.
+
+## Architecture
+AetherVision follows a local-first architecture with distinct responsibilities for media ingestion, metadata management, AI enrichment, retrieval and user interaction.
+
+The current implementation is based on Python, Flask and SQLite, with local image processing and AI capabilities. The longer-term architectural direction is to evolve processing into independently managed, resource-aware inference components.
+
+See Architecture Overview for the current system design, component responsibilities and architectural evolution.
 
 Start page
 <img width="1898" height="900" alt="Screenshot 2026-10-16 095923" src="https://github.com/user-attachments/assets/816c2be0-24f8-49e6-ab4e-7f5d5eb109c4" />
