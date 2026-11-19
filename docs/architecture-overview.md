@@ -262,20 +262,5 @@ These stages represent an architectural direction, not a commitment that all cap
 | Deployment Topology | Deployment models and runtime environments |
 | Security and Privacy | Trust boundaries and security controls |
 
-## 11. Architectural Governance
 
-Architectural changes should be documented using Architecture Decision Records (ADRs).
 
-ADRs should explain:
-
-- The problem or architectural context.
-- Considered alternatives.
-- The selected approach.
-- Consequences and trade-offs.
-- The implementation status.
-
-See **Architecture Decision Records** for individual decisions.
-
----
-
-**Guiding principle:** AetherVision should grow from a reliable local-first media intelligence application into a distributed multimodal platform without compromising data ownership, privacy or architectural simplicity.
