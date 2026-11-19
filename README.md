@@ -21,7 +21,8 @@ See Architecture Overview for the current system design, component responsibilit
 Start page
 <img width="1898" height="900" alt="Screenshot 2026-10-16 095923" src="https://github.com/user-attachments/assets/816c2be0-24f8-49e6-ab4e-7f5d5eb109c4" />
 Map with image locations
-<img width="1898" height="910" alt="Screenshot 2026-10-15 212452" src="https://github.com/user-attachments/assets/2793afb5-b07e-4b93-8438-84c9bd4e28fa" />
+<img width="1917" height="906" alt="Screenshot 2026-11-19 135608" src="https://github.com/user-attachments/assets/2855f8cb-b2bd-4bf4-8947-d51936372431" />
+
 
 ## Why ImageviewerAI?
 
