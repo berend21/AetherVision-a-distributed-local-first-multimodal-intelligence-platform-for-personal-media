@@ -1,9 +1,6 @@
 
 # AetherVision — System Context
 
-**Document status:** Living document  
-**Architecture level:** C4 — Level 1 (System Context)
-
 ## 1. Purpose
 
 This document describes AetherVision from an external perspective.
