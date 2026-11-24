@@ -1,0 +1,1812 @@
+{% extends "base.html" %}
+
+{% block title %}Photos{% endblock %}
+{% block content %}
+{% block head_scripts %}
+
+<link rel="stylesheet" href="{{ url_for('static', filename='check/maplibre-gl.css') }}">
+<script src="{{ url_for('static', filename='check/maplibre-gl.js') }}"></script>
+<script src="{{ url_for('static', filename='check/pmtiles.js') }}"></script>
+
+{% endblock %}
+<section id="photosView" class="photos-view">
+
+    <div class="selection-toolbar"
+         id="selectionToolbar"
+         hidden>
+        <span id="selectionCount">0 selected</span>
+        <div>
+            <button class="view-btn" id="openSelected" type="button">
+                Open first
+            </button>
+
+            <button class="view-btn" id="clearSelection"  type="button">
+                Clear
+            </button>
+
+            <button class="view-btn" id="exitSelection" type="button">
+                Done
+            </button>
+        </div>
+    </div>
+    
+
+    <div class="empty" id="empty">
+        <div class="empty-icon">📷</div>
+        <div class="empty-text">No photos found</div>
+    </div>
+
+
+    <div class="gallery" id="gallery"></div>
+
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+    </div>
+
+    <div id="sentinel" aria-hidden="true"></div>
+
+</section>
+
+<div class="lightbox" id="lightbox">
+
+    <div class="lb-header">
+
+        <button class="lb-btn" id="lbClose" type="button" title="Close"  aria-label="Close">
+            ✕
+        </button>
+        <span class="lb-title" id="lbTitle"></span>
+        <button class="lb-btn danger" id="lbDelete"  type="button" title="Delete"  aria-label="Delete photo">
+            🗑
+        </button>
+        <button class="lb-btn"  id="lbDownload"  type="button" title="Download photo" aria-label="Download photo">
+        <svg viewBox="0 0 24 24"
+            width="21"
+            height="21"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <path d="m7 10 5 5 5-5"/>
+            <path d="M12 15V3"/>
+        </svg>
+    </button>
+
+        <button class="lb-btn"
+                id="lbRotate"
+                type="button"
+                title="Rotate 90° clockwise"
+                aria-label="Rotate photo 90 degrees clockwise">
+
+            <svg viewBox="0 0 24 24"
+                 width="21"
+                 height="21"
+                 fill="none"
+                 stroke="currentColor"
+                 stroke-width="1.8"
+                 stroke-linecap="round"
+                 stroke-linejoin="round"
+                 aria-hidden="true">
+                <path d="M20 11a8 8 0 0 0-14.9-3L3 11"/>
+                <path d="M3 5v6h6"/>
+                <path d="M4 13a8 8 0 0 0 14.9 3L21 13"/>
+                <path d="M21 19v-6h-6"/>
+            </svg>
+        </button>
+
+        <button class="lb-btn"
+                id="lbInfo"
+                type="button"
+                title="Info"
+                aria-label="Photo information">
+            ℹ
+        </button>
+
+    </div>
+
+
+    <button class="lb-nav prev"
+            id="lbPrev"
+            type="button"
+            aria-label="Previous photo">
+        ‹
+    </button>
+
+    <button class="lb-nav next"
+            id="lbNext"
+            type="button"
+            aria-label="Next photo">
+        ›
+    </button>
+
+    <div class="lb-content" id="lbContent">
+
+        <div class="lb-spinner" id="lbSpinner"></div>
+        <img id="lbImg"
+             draggable="false"
+             alt="">
+    </div>
+
+    <div class="lb-footer">
+        <span id="lbCounter"></span>
+        <span id="lbDims"></span>
+    </div>
+
+    <aside class="info-panel" id="infoPanel">
+
+        <div class="info-header">
+            <h3>Details</h3>
+
+            <button class="lb-btn"
+                    id="infoClose"
+                    type="button"
+                    aria-label="Close details">
+                ✕
+            </button>
+        </div>
+
+        <div class="info-content" id="infoContent"></div>
+    </aside>
+</div>
+
+<div class="modal-overlay" id="deleteModal">
+
+    <div class="modal">
+        <div class="modal-icon">🗑️</div>
+        <h3>Delete Photo?</h3>
+        <div class="modal-filename" id="deleteFilename"></div>
+        <p>This will permanently delete the file from your computer. </p>
+        <div class="modal-actions">
+            <button class="btn"  id="deleteCancel" type="button">
+                Cancel
+            </button>
+            <button class="btn danger-solid" id="deleteConfirm"  type="button">
+                Delete
+            </button>
+        </div>
+    </div>
+</div>
+
+<section id="placesView" class="places-view" hidden>
+
+    <div class="places-toolbar">
+        <div>
+            <h2>Places</h2>
+            <p id="placesSummary">Discover photos by location</p>
+        </div>
+
+        <button type="button"
+                id="placesRefresh"
+                class="view-btn">
+            Refresh
+        </button>
+    </div>
+    <div id="videosView" hidden>
+
+    </div>
+
+    <div class="places-layout">
+
+        <div id="placesMap"
+             class="places-map"
+             role="region"
+             aria-label="Photo locations map">
+        </div>
+
+        <aside id="placePhotos" class="place-photos">
+
+            <h3 id="placeTitle">Explore your places</h3>
+            <p id="placeHint">Select a location to see its photos.</p>
+            <div id="placePhotoGrid" class="place-photo-grid"></div>
+
+        </aside>
+
+    </div>
+</section>
+{% endblock %}
+{% block scripts %}
+
+<script>
+    const PER_PAGE = 100;
+    const state = {
+        photos: [],
+        page: 1,
+        total: 0,
+        loading: false,
+        searchLoading: false,
+        paginationLoading: false,
+        hasMore: true,
+        search: '',
+        idx: 0,
+        infoPanelOpen: false,
+        deleteTarget: null,
+        selectionMode: false,
+        selectedIds: new Set(),
+        layout: 'square',
+        zoom: 1,
+        panX: 0,
+        panY: 0,
+        dragging: false,
+        dragStartX: 0,
+        dragStartY: 0,
+        dragOriginX: 0,
+        dragOriginY: 0,
+        rotation: 0
+    };
+    let searchRequestId = 0;
+    
+    const requests = {
+        search: null,
+        pagination: null,
+        details: null
+    };
+
+    function abortRequest(name) {
+        requests[name]?.abort();
+        requests[name] = null;
+    }
+
+
+    const $ = id => {
+        const element = document.getElementById(id);
+
+        if (!element) {
+            console.warn(`[Photos] Missing DOM element: #${id}`);
+        }
+
+        return element;
+    };
+
+    function formatDate(iso) {
+        if (!iso) return null;
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return null;
+        return d.toLocaleDateString(undefined, { 
+            year: 'numeric', month: 'short', day: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+        });
+    }
+
+    function formatSize(bytes) {
+        if (!bytes) return '';
+        if (bytes > 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+        return (bytes / 1024).toFixed(0) + ' KB';
+    }
+
+
+    async function fetchPhotos(page, search = '') {
+        const params = new URLSearchParams({
+            page: String(page),
+            per_page: String(PER_PAGE),
+            search
+        });
+
+        return fetchJson('/api/photos?' + params);
+    }
+    
+    async function fetchPhotosWithSignal(
+        page,
+        search = '',
+        signal
+    ) {
+        const params = new URLSearchParams({
+            page: String(page),
+            per_page: String(PER_PAGE),
+            search
+        });
+
+        return fetchJson(
+            '/api/photos?' + params,
+            { signal }
+        );
+    }
+
+    async function fetchDetail(id) {
+        return fetchJson(
+            '/api/photo/' + encodeURIComponent(id)
+        );
+    }
+
+    async function fetchJson(url, options = {}) {
+        const controller = new AbortController();
+        const externalSignal = options.signal;
+
+        let timedOut = false;
+
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, 30000);
+
+        const abortFromExternal = () => {
+            controller.abort(externalSignal.reason);
+        };
+
+        if (externalSignal?.aborted) {
+            abortFromExternal();
+        } else {
+            externalSignal?.addEventListener(
+                'abort',
+                abortFromExternal,
+                { once: true }
+            );
+        }
+
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller.signal
+            });
+
+            const text = await response.text();
+
+            let data;
+
+            try {
+                data = text ? JSON.parse(text) : {};
+            } catch {
+                throw new Error(
+                    `Invalid JSON response (${response.status})`
+                );
+            }
+
+            if (!response.ok) {
+                throw new Error(
+                    data.error ||
+                    data.message ||
+                    `HTTP ${response.status}`
+                );
+            }
+
+            return data;
+
+        } catch (error) {
+            if (timedOut) {
+                throw new Error('Request timed out');
+            }
+
+            throw error;
+
+        } finally {
+            clearTimeout(timeout);
+
+            externalSignal?.removeEventListener(
+                'abort',
+                abortFromExternal
+            );
+        }
+    }
+
+    async function fetchStats() {
+        return fetchJson('/api/stats');
+    }
+
+    async function deletePhoto(id) {
+        return fetchJson('/api/photo/' + encodeURIComponent(id), {
+            method: 'DELETE'
+        });
+    }
+
+    function createPhotoEl(p) {
+        const div = document.createElement('div');
+
+        div.className = 'photo';
+        div.dataset.id = String(p.id);
+        div.setAttribute('aria-label', p.filename || 'Photo');
+
+        if (p.dominant_color) {
+            div.style.backgroundColor = p.dominant_color;
+        }
+
+        if (state.selectedIds.has(String(p.id))) {
+            div.classList.add('selected');
+        }
+
+        div.style.aspectRatio = state.layout === 'original'
+            ? (p.width > 0 && p.height > 0
+                ? `${p.width} / ${p.height}`
+                : 'auto')
+            : '1 / 1';
+
+        const img = document.createElement('img');
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.fetchPriority = 'low';
+        img.draggable = false;
+        img.alt = p.filename || '';
+        img.src = '/thumbnail/' + encodeURIComponent(p.id);
+
+        img.onload = () => img.classList.add('loaded');
+
+        img.onerror = () => {
+            div.style.backgroundColor = '#2a2a2a';
+        };
+
+        div.appendChild(img);
+
+        if (p.has_tags) {
+            const badge = document.createElement('span');
+            badge.className = 'badge';
+            badge.textContent = 'AI';
+            div.appendChild(badge);
+        }
+
+        if (state.selectedIds.has(String(p.id))) {
+            const check = document.createElement('span');
+            check.className = 'selection-check';
+            check.textContent = '✓';
+            check.setAttribute('aria-hidden', 'true');
+            div.appendChild(check);
+        }
+
+        return div;
+    }
+
+    function formatGroupDate(date) {
+        if (date === 'Unknown date') return date;
+
+        const parsed = new Date(date + 'T12:00:00');
+
+        return Number.isNaN(parsed.getTime())
+            ? date
+            : parsed.toLocaleDateString(undefined, {
+                weekday: 'short',
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+    }
+    function formatMonthHeading(date) {
+        if (date === 'Unknown date') return date;
+
+        const parsed = new Date(date + 'T12:00:00');
+
+        return Number.isNaN(parsed.getTime())
+            ? date
+            : parsed.toLocaleDateString(undefined, {
+                month: 'long',
+                year: 'numeric'
+            });
+    }
+    function getGroupLocations(photos) {
+        const locations = new Set();
+
+        for (const p of photos) {
+            const subdivision = p.subdivision_name?.trim();
+            const city = p.city_name?.trim();
+            const country = p.country_name?.trim();
+
+            const location = [subdivision, city, country]
+                .filter(Boolean)
+                .join(', ');
+
+            if (location) {
+                locations.add(location);
+            }
+        }
+
+        return [...locations].join(' & ');
+    }
+
+    function getRowCapacity() {
+        return window.innerWidth <= 600 ? 4 : 8;
+    }
+    function render(photos, append = false) {
+        const gallery = $('gallery');
+
+        const allPhotos = append
+            ? [...state.photos, ...photos]
+            : [...photos];
+
+        state.photos = allPhotos;
+
+
+        gallery.replaceChildren();
+        gallery.dataset.layout = state.layout;
+        gallery.classList.toggle('selection-mode', state.selectionMode);
+
+        const capacity = getRowCapacity();
+        gallery.style.setProperty('--row-columns', capacity);
+
+        const groups = [];
+
+        for (const p of allPhotos) {
+            const date = p.date_group || 'Unknown date';
+            let group = groups[groups.length - 1];
+
+            if (!group || group.date !== date) {
+                group = { date, photos: [] };
+                groups.push(group);
+            }
+
+            group.photos.push(p);
+        }
+
+        const frag = document.createDocumentFragment();
+        let pending = [];
+        let pendingCount = 0;
+
+        function makeHeading(group) {
+            const heading = document.createElement('div');
+            heading.className = 'date-heading';
+
+            const date = document.createElement('span');
+            date.textContent = formatGroupDate(group.date);
+
+            heading.appendChild(date);
+
+            const location = getGroupLocations(group.photos);
+
+            if (location) {
+                const place = document.createElement('span');
+                place.className = 'date-location';
+                place.textContent = ` · ${location}`;
+                heading.appendChild(place);
+            }
+
+            return heading;
+        }
+
+        function addPhotos(container, group) {
+            for (const p of group.photos) {
+                container.appendChild(createPhotoEl(p));
+            }
+        }
+
+        function flushPending() {
+            if (!pending.length) return;
+
+            const section = document.createElement('section');
+            section.className = 'day-section shared-days';
+
+            const row = document.createElement('div');
+            row.className = 'shared-photo-row';
+            row.style.setProperty('--row-columns', capacity);
+
+            for (const group of pending) {
+                const day = document.createElement('div');
+                day.className = 'shared-day';
+                day.style.gridColumn = `span ${group.photos.length}`;
+
+                day.appendChild(makeHeading(group));
+
+                const images = document.createElement('div');
+                images.className = 'shared-day-photos';
+                images.style.gridTemplateColumns =
+                    `repeat(${group.photos.length}, minmax(0, 1fr))`;
+
+                addPhotos(images, group);
+                day.appendChild(images);
+                row.appendChild(day);
+            }
+
+            section.appendChild(row);
+            frag.appendChild(section);
+
+            pending = [];
+            pendingCount = 0;
+        }
+
+        function renderIsolatedDay(group) {
+            const section = document.createElement('section');
+            section.className = 'day-section';
+            section.dataset.date = group.date;
+
+            section.appendChild(makeHeading(group));
+
+            const grid = document.createElement('div');
+            grid.className = 'day-photos';
+            grid.style.setProperty('--row-columns', capacity);
+
+            addPhotos(grid, group);
+
+            section.appendChild(grid);
+            frag.appendChild(section);
+        }
+
+        let currentMonth = null;
+
+        for (const group of groups) {
+            const count = group.photos.length;
+
+            const month = group.date === 'Unknown date'
+                ? 'Unknown date'
+                : group.date.slice(0, 7);
+
+            // Start a new month section when the month changes.
+            if (month !== currentMonth) {
+                flushPending();
+
+                const monthHeading = document.createElement('h2');
+                monthHeading.className = 'month-heading';
+                monthHeading.textContent = formatMonthHeading(group.date);
+
+                frag.appendChild(monthHeading);
+
+                currentMonth = month;
+            }
+
+            if (count >= capacity) {
+                flushPending();
+                renderIsolatedDay(group);
+                continue;
+            }
+
+            if (pendingCount + count > capacity) {
+                flushPending();
+            }
+
+            pending.push(group);
+            pendingCount += count;
+
+            // A completely filled row is closed immediately.
+            if (pendingCount === capacity) {
+                flushPending();
+            }
+        }
+
+        flushPending();
+        gallery.appendChild(frag);
+
+        $('empty').classList.toggle(
+            'active',
+            state.photos.length === 0
+        );
+
+        updateSelectionUI();
+
+    }
+
+    function updateSelectionUI() {
+        const count = state.selectedIds.size;
+
+        $('selectionToolbar').hidden = !state.selectionMode;
+        $('selectionCount').textContent = `${count} selected`;
+
+        $('selectMode').classList.toggle('active', state.selectionMode);
+        $('selectMode').setAttribute(
+            'aria-pressed',
+            String(state.selectionMode)
+        );
+
+        $('gallery').classList.toggle(
+            'selection-mode',
+            state.selectionMode
+        );
+    }
+
+    function setSelectionMode(enabled) {
+        state.selectionMode = enabled;
+
+        if (!enabled) {
+            state.selectedIds.clear();
+        }
+
+        $('gallery').classList.toggle(
+            'selection-mode',
+            enabled
+        );
+
+        $('gallery').querySelectorAll('.photo').forEach(photo => {
+            const id = photo.dataset.id;
+            const selected = state.selectedIds.has(id);
+
+            photo.classList.toggle('selected', selected);
+
+            let check = photo.querySelector('.selection-check');
+
+            if (selected && !check) {
+                check = document.createElement('span');
+                check.className = 'selection-check';
+                check.textContent = '✓';
+                check.setAttribute('aria-hidden', 'true');
+
+                photo.appendChild(check);
+            } else if (!selected && check) {
+                check.remove();
+            }
+        });
+
+        updateSelectionUI();
+    }
+
+    
+    function renderGalleryLayout() {
+        const gallery = $('gallery');
+
+        gallery.dataset.layout = state.layout;
+
+        const squareBtn = $('toolbarGridView');
+        const originalBtn = $('toolbarTimelineView');
+
+        squareBtn?.classList.toggle(
+            'active',
+            state.layout === 'square'
+        );
+
+        originalBtn?.classList.toggle(
+            'active',
+            state.layout === 'original'
+        );
+
+        squareBtn?.setAttribute(
+            'aria-pressed',
+            String(state.layout === 'square')
+        );
+
+        originalBtn?.setAttribute(
+            'aria-pressed',
+            String(state.layout === 'original')
+        );
+
+        const photoById = new Map(
+            state.photos.map(p => [String(p.id), p])
+        );
+
+        for (const el of gallery.querySelectorAll('.photo')) {
+            const p = photoById.get(el.dataset.id);
+
+            if (!p) continue;
+
+            el.style.aspectRatio =
+                state.layout === 'original' &&
+                p.width > 0 &&
+                p.height > 0
+                    ? `${p.width} / ${p.height}`
+                    : '1 / 1';
+        }
+    }
+
+
+    $('selectMode').addEventListener('click', () => {
+        console.trace('[DEBUG] Select button clicked');
+
+        console.log('[DEBUG] Selection before:', state.selectionMode);
+
+        setSelectionMode(!state.selectionMode);
+
+        console.log('[DEBUG] Selection after:', state.selectionMode);
+    });
+
+    $('clearSelection').addEventListener('click', () => {
+        state.selectedIds.clear();
+        setSelectionMode(true);
+    });
+
+    $('exitSelection').addEventListener('click', () => {
+        setSelectionMode(false);
+    });
+
+    $('openSelected').addEventListener('click', () => {
+        const idx = state.photos.findIndex(
+            p => state.selectedIds.has(String(p.id))
+        );
+
+        if (idx === -1) return;
+
+        setSelectionMode(false);
+        openLb(idx);
+    });
+
+    $('toolbarGridView').addEventListener('click', () => {
+        state.layout = 'square';
+        renderGalleryLayout();
+    });
+
+    $('toolbarTimelineView').addEventListener('click', () => {
+        state.layout = 'original';
+        renderGalleryLayout();
+    });
+
+    function removePhotoFromGallery(id) {
+        const el = $('gallery').querySelector(`[data-id="${id}"]`);
+        if (el) {
+            el.style.transition = 'transform 0.2s, opacity 0.2s';
+            el.style.transform = 'scale(0.8)';
+            el.style.opacity = '0';
+            setTimeout(() => el.remove(), 200);
+        }
+        state.photos = state.photos.filter(p => p.id !== id);
+    }
+
+    
+    async function loadMore() {
+        if (
+            state.searchLoading ||
+            state.paginationLoading ||
+            !state.hasMore
+        ) {
+            return;
+        }
+
+        const requestId = searchRequestId;
+
+        abortRequest('pagination');
+
+        const controller = new AbortController();
+        requests.pagination = controller;
+
+        state.paginationLoading = true;
+
+        $('loading').classList.add('active');
+
+        const nextPage = state.page + 1;
+
+        try {
+            const data = await fetchPhotosWithSignal(
+                nextPage,
+                state.search,
+                controller.signal
+            );
+
+            if (
+                requestId !== searchRequestId ||
+                controller.signal.aborted
+            ) {
+                return;
+            }
+
+            const photos = data.photos || [];
+
+            const existingIds = new Set(
+                state.photos.map(p => String(p.id))
+            );
+
+            const newPhotos = photos.filter(
+                p => !existingIds.has(String(p.id))
+            );
+
+            state.page = nextPage;
+            state.total = Number(data.total) || 0;
+
+            if (newPhotos.length) {
+                render(newPhotos, true);
+            }
+
+            state.hasMore =
+                state.photos.length < state.total &&
+                photos.length > 0;
+
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.error('[Photos] Pagination failed:', error);
+
+                showToast('Failed to load more photos', 'error');
+            }
+
+        } finally {
+            if (requests.pagination === controller) {
+                requests.pagination = null;
+
+                state.paginationLoading = false;
+
+                $('loading').classList.remove('active');
+            }
+        }
+    }
+
+
+    
+    const doSearch = debounce(async (q) => {
+        const requestId = searchRequestId;
+
+        abortRequest('search');
+        abortRequest('pagination');
+
+        const controller = new AbortController();
+        requests.search = controller;
+
+        state.search = q.trim();
+        state.page = 1;
+        state.hasMore = true;
+        state.searchLoading = true;
+
+        $('loading').classList.add('active');
+
+        try {
+            const data = await fetchPhotosWithSignal(
+                1,
+                state.search,
+                controller.signal
+            );
+
+            if (
+                requestId !== searchRequestId ||
+                controller.signal.aborted
+            ) return;
+
+            state.total = Number(data.total) || 0;
+
+            state.hasMore =
+                (data.photos?.length || 0) < state.total;
+
+            render(data.photos || []);
+
+        } catch (error) {
+            if (error.name === 'AbortError') return;
+
+            if (requestId === searchRequestId) {
+                console.error('Search error:', error);
+                showToast('Search failed', 'error');
+            }
+
+        } finally {
+            if (requests.search === controller) {
+                requests.search = null;
+                state.searchLoading = false;
+                $('loading')?.classList.remove('active');
+            }
+        }
+
+        updateStats();
+
+    }, 150);
+
+
+    async function updateStats() {
+        try {
+            const s = await fetchStats();
+
+            const total = Number(s.total) || 0;
+            const tagged = Number(s.with_tags) || 0;
+
+            $('headerPhotoCount').textContent =
+                `${total.toLocaleString()} photos`;
+
+            $('headerAiCount').textContent =
+                `✦ ${tagged.toLocaleString()} AI classified`;
+
+            const progress = total > 0
+                ? Math.min(100, (tagged / total) * 100)
+                : 0;
+
+            $('aiProgressBar').style.width = `${progress}%`;
+
+        } catch (e) {
+            console.error('Stats error:', e);
+        }
+    }
+
+    function openLb(idx) {
+        state.idx = idx;
+        state.infoPanelOpen = false;
+
+        $('infoPanel').classList.remove('active');
+        $('lightbox').classList.add('active');
+        document.body.style.overflow = 'hidden';
+
+        loadLbImg();
+    }
+
+    function closeLb() {
+        $('lightbox').classList.remove('active');
+        $('infoPanel').classList.remove('active');
+
+        state.infoPanelOpen = false;
+        document.body.style.overflow = '';
+
+        window.PhotoViewer?.restore();
+    }
+    
+    window.PhotoViewer = {
+        photosBeforePlaceLightbox: null,
+
+        open(photos, photoId) {
+            if (!Array.isArray(photos) || !photos.length) return;
+
+            this.photosBeforePlaceLightbox = {
+                photos: state.photos,
+                idx: state.idx
+            };
+
+            state.photos = photos;
+
+            state.idx = photos.findIndex(
+                p => String(p.id) === String(photoId)
+            );
+
+            if (state.idx < 0) {
+                this.restore();
+                return;
+            }
+
+            openLb(state.idx);
+        },
+
+        restore() {
+            if (!this.photosBeforePlaceLightbox) return;
+
+            state.photos = this.photosBeforePlaceLightbox.photos;
+            state.idx = this.photosBeforePlaceLightbox.idx;
+
+            this.photosBeforePlaceLightbox = null;
+        }
+    };
+
+    let lightboxRequestId = 0;
+    function loadLbImg(sourceEl = null) {
+        const requestId = ++lightboxRequestId;
+        const p = state.photos[state.idx];
+        if (!p) return;
+
+        const lbImg = $('lbImg');
+        const lbSpinner = $('lbSpinner');
+
+        resetZoom();
+
+        lbImg.style.display = 'none';
+        lbImg.style.opacity = '1';
+        lbSpinner.style.display = 'block';
+
+        $('lbTitle').textContent = p.filename || '';
+        $('lbCounter').textContent =
+            `${state.idx + 1} / ${state.photos.length}`;
+        $('lbDims').textContent = '';
+
+        $('lbPrev').disabled = state.idx === 0;
+        $('lbNext').disabled =
+            state.idx >= state.photos.length - 1;
+
+        const img = new Image();
+
+        img.onload = () => {
+            if (requestId !== lightboxRequestId) return;
+
+            if (state.photos[state.idx]?.id !== p.id) return;
+
+            lbImg.src = img.src;
+            lbImg.style.display = 'block';
+            lbSpinner.style.display = 'none';
+
+            $('lbDims').textContent =
+                `${img.naturalWidth} × ${img.naturalHeight}`;
+            lbImg.style.opacity = '1';
+            
+        };
+
+        img.onerror = () => {
+            if (requestId !== lightboxRequestId) return;
+            if (state.photos[state.idx]?.id !== p.id) return;
+
+            lbSpinner.style.display = 'none';
+            lbImg.style.display = 'none';
+            $('lbDims').textContent = 'Failed to load';
+            showToast('Failed to load photo', 'error');
+        };
+
+        img.src = '/image/' + encodeURIComponent(p.id);
+
+        if (state.idx + 1 < state.photos.length) {
+            new Image().src =
+                '/image/' + encodeURIComponent(
+                    state.photos[state.idx + 1].id
+                );
+        }
+
+        if (state.idx > 0) {
+            new Image().src =
+                '/image/' + encodeURIComponent(
+                    state.photos[state.idx - 1].id
+                );
+        }
+    }
+
+    function navLb(dir) {
+        const newIdx = state.idx + dir;
+
+        if (newIdx >= 0 && newIdx < state.photos.length) {
+            state.idx = newIdx;
+            loadLbImg();
+
+            if (state.infoPanelOpen) {
+                loadInfoPanel();
+            }
+        }
+    }
+
+    function addInfoRow(container, label, value, options = {}) {
+        const row = document.createElement('div');
+        row.className = 'info-row';
+
+        const labelEl = document.createElement('div');
+        labelEl.className = 'info-label';
+        labelEl.textContent = label;
+
+        const valueEl = document.createElement('div');
+        valueEl.className = 'info-value';
+
+        if (options.valueClass) {
+            valueEl.classList.add(options.valueClass);
+        }
+
+        if (options.preformatted) {
+            valueEl.style.maxHeight = '80px';
+            valueEl.style.overflow = 'auto';
+            valueEl.style.backgroundColor = 'var(--bg)';
+            valueEl.style.padding = '8px';
+            valueEl.style.borderRadius = '6px';
+            valueEl.style.fontSize = '12px';
+        }
+
+        valueEl.textContent = value == null ? '' : String(value);
+
+        row.append(labelEl, valueEl);
+        container.appendChild(row);
+    }
+
+    function addTagRow(container, label, values) {
+        const tags = Object.keys(values || {});
+        if (!tags.length) return;
+
+        const row = document.createElement('div');
+        row.className = 'info-row';
+
+        const labelEl = document.createElement('div');
+        labelEl.className = 'info-label';
+        labelEl.textContent = label;
+
+        const valueEl = document.createElement('div');
+        valueEl.className = 'info-value';
+
+        for (const tag of tags) {
+            const span = document.createElement('span');
+            span.className = 'tag';
+            span.textContent = tag;
+            valueEl.appendChild(span);
+        }
+
+        row.append(labelEl, valueEl);
+        container.appendChild(row);
+    }
+
+    async function loadInfoPanel() {
+        const p = state.photos[state.idx];
+        if (!p) return;
+
+        const content = $('infoContent');
+        content.replaceChildren();
+
+        const spinner = document.createElement('div');
+        spinner.className = 'spinner';
+        spinner.style.margin = '40px auto';
+        content.appendChild(spinner);
+
+        try {
+            const d = await fetchDetail(p.id);
+
+            if (
+                !state.infoPanelOpen ||
+                state.photos[state.idx]?.id !== p.id
+            ) {
+                return;
+            }
+
+            content.replaceChildren();
+
+            addInfoRow(content, 'Filename', d.filename);
+
+            const dateTaken = formatDate(d.date_taken);
+
+            if (dateTaken) {
+                addInfoRow(content, 'Date Taken', dateTaken);
+            } else {
+                const row = document.createElement('div');
+                row.className = 'info-row date-edit-row';
+
+                const label = document.createElement('div');
+                label.className = 'info-label';
+                label.textContent = 'Date Taken';
+
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.className = 'date-taken-input';
+                input.placeholder = 'YYYY-MM-DD HH:MM';
+                input.setAttribute('aria-label', 'Enter photo date taken');
+
+                const saveBtn = document.createElement('button');
+                saveBtn.type = 'button';
+                saveBtn.textContent = 'Save';
+                saveBtn.className = 'view-btn';
+
+                saveBtn.addEventListener('click', async () => {
+                    const value = input.value.trim();
+
+                    if (!value) {
+                        showToast('Please enter a date', 'error');
+                        return;
+                    }
+
+                    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) {
+                        showToast('Use YYYY-MM-DD HH:MM format', 'error');
+                        return;
+                    }
+
+                    const parsed = new Date(value.replace(' ', 'T'));
+
+                    if (
+                        Number.isNaN(parsed.getTime()) ||
+                        parsed.getFullYear() !== Number(value.slice(0, 4)) ||
+                        parsed.getMonth() + 1 !== Number(value.slice(5, 7)) ||
+                        parsed.getDate() !== Number(value.slice(8, 10))
+                    ) {
+                        showToast('Invalid date', 'error');
+                        return;
+                    }
+
+                    try {
+                        const csrfToken = document.querySelector(
+                            'meta[name="csrf-token"]'
+                        )?.content;
+
+                        if (!csrfToken) {
+                            showToast('CSRF token missing. Refresh the page.', 'error');
+                            return;
+                        }
+
+                        await fetchJson('/api/photo/' + encodeURIComponent(p.id) + '/date', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-CSRFToken': csrfToken
+                            },
+                            body: JSON.stringify({
+                                date_taken: value
+                            })
+                        });
+
+                        showToast('Date taken updated', 'success');
+
+                        loadInfoPanel();
+
+                    } catch (error) {
+                        console.error('Date update failed:', error);
+
+                        showToast(
+                            'Failed to update date taken: ' + error.message,
+                            'error'
+                        );
+                    }
+                });
+
+                row.append(label, input, saveBtn);
+                content.appendChild(row);
+            }
+
+            if (d.file_modified && d.file_modified !== dateTaken) {
+                addInfoRow(content, 'File Modified', formatDate(d.file_modified), {
+                    valueClass: 'muted'
+                });
+            }
+
+            if (d.exif_camera) {
+                addInfoRow(content, 'Camera', d.exif_camera);
+            }
+            
+
+            addInfoRow(
+                content,
+                'Dimensions',
+                `${d.width ?? '?'} × ${d.height ?? '?'}`
+            );
+
+            addInfoRow(content, 'Size', formatSize(d.file_size));
+
+            if (
+                Number.isFinite(d.gps?.lat) &&
+                Number.isFinite(d.gps?.lon)
+            ) {
+                const row = document.createElement('div');
+                row.className = 'info-row';
+
+                const label = document.createElement('div');
+                label.className = 'info-label';
+                label.textContent = 'Location';
+
+                const value = document.createElement('div');
+                value.className = 'info-value';
+
+                const lat = d.gps.lat;
+                const lon = d.gps.lon;
+
+                const link = document.createElement('a');
+                const params = new URLSearchParams({
+                    q: `${lat},${lon}`
+                });
+
+                link.href = `https://maps.google.com/?${params}`;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent =
+                    `${lat.toFixed(5)}, ${lon.toFixed(5)} ↗`;
+
+                value.appendChild(link);
+                row.append(label, value);
+                content.appendChild(row);
+                const place = [
+                    d.subdivision_name,
+                    d.city_name,
+                    d.region_name,
+                    d.country_name
+                ].filter(Boolean).join(', ');
+
+                if (place) {
+                    addInfoRow(content, 'Place', place);
+                }
+            }
+
+            if (d.caption || d.tags || d.categories || d.ocr_text) {
+                const separator = document.createElement('div');
+                separator.style.marginTop = '20px';
+                separator.style.paddingTop = '16px';
+                separator.style.borderTop = '1px solid var(--border)';
+                content.appendChild(separator);
+
+                if (d.caption) {
+                    addInfoRow(content, 'Caption', d.caption);
+                }
+
+                addTagRow(content, 'Tags', d.tags);
+                addTagRow(content, 'Categories', d.categories);
+
+                if (d.ocr_text) {
+                    addInfoRow(content, 'Text (OCR)', d.ocr_text, {
+                        preformatted: true
+                    });
+                }
+            }
+
+            const path = document.createElement('div');
+            path.className = 'info-path';
+            path.textContent = d.filepath || '';
+            content.appendChild(path);
+
+        } catch (e) {
+            console.error('[Photo Details] Failed:', {
+                photoId: p.id,
+                filename: p.filename,
+                error: e,
+                message: e.message,
+                stack: e.stack
+            });
+
+            if (
+                !state.infoPanelOpen ||
+                state.photos[state.idx]?.id !== p.id
+            ) {
+                return;
+            }
+
+            content.replaceChildren();
+
+            const error = document.createElement('div');
+            error.style.color = 'var(--danger)';
+            error.style.padding = '20px';
+
+            error.textContent =
+                'Failed to load details: ' + (e.message || 'Unknown error');
+
+            content.appendChild(error);
+        }
+    }
+
+
+
+    function showInfo() {
+        state.infoPanelOpen = true;
+        $('infoPanel').classList.add('active');
+        loadInfoPanel();
+    }
+
+    function hideInfo() {
+        state.infoPanelOpen = false;
+        $('infoPanel').classList.remove('active');
+    }
+
+    function showDeleteModal() {
+        const p = state.photos[state.idx];
+        if (!p) return;
+        
+        state.deleteTarget = p;
+        $('deleteFilename').textContent = p.filename;
+        $('deleteModal').classList.add('active');
+    }
+
+    function hideDeleteModal() {
+        state.deleteTarget = null;
+        $('deleteModal').classList.remove('active');
+    }
+
+    function confirmDelete() { 
+        if (!state.deleteTarget) return;
+
+        hideDeleteModal();
+
+        showToast('Deletion is currently disabled', 'info'); }
+
+    
+    async function rescan() {
+        const btn = $('rescan');
+        btn.disabled = true;
+
+        try {
+            const csrfToken = document.querySelector(
+                'meta[name="csrf-token"]'
+            )?.content;
+
+            if (!csrfToken) {
+                throw new Error(
+                    'CSRF token missing. Refresh the page.'
+                );
+            }
+
+            const result = await fetchJson('/api/rescan', {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': csrfToken
+                }
+            });
+
+            if (result.success !== true) {
+                throw new Error(result.error || 'Scan failed');
+            }
+
+            showToast('Scan complete', 'success');
+
+            await updateStats();
+            await doSearch(state.search);
+
+        } catch (e) {
+            console.error('Rescan error:', e);
+            showToast(e.message || 'Scan failed', 'error');
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+
+    const observer = new IntersectionObserver(entries => {
+        const entry = entries[0];
+
+        if (
+            entry.isIntersecting &&
+            !state.searchLoading &&
+            !state.paginationLoading &&
+            state.hasMore
+        ) {
+            loadMore();
+        }
+    }, {
+        rootMargin: '200px 0px',
+        threshold: 0
+    });
+
+    observer.observe($('sentinel'));
+
+    let scrollTicking = false;
+    window.addEventListener('scroll', () => {
+        if (!scrollTicking) {
+            requestAnimationFrame(() => {
+                $('scrollTop').classList.toggle('visible', window.scrollY > 400);
+                scrollTicking = false;
+            });
+            scrollTicking = true;
+        }
+    }, { passive: true });
+
+    
+    $('gallery').addEventListener('click', e => {
+        const photo = e.target.closest('.photo');
+        if (!photo) return;
+
+        const id = photo.dataset.id;
+
+        const idx = state.photos.findIndex(
+            p => String(p.id) === id
+        );
+
+        if (idx < 0) {
+            console.warn('[Photos] Photo not found:', id);
+            return;
+        }
+
+        if (state.selectionMode) {
+            if (state.selectedIds.has(id)) {
+                state.selectedIds.delete(id);
+            } else {
+                state.selectedIds.add(id);
+            }
+
+            photo.classList.toggle(
+                'selected',
+                state.selectedIds.has(id)
+            );
+
+            let check = photo.querySelector('.selection-check');
+
+            if (state.selectedIds.has(id) && !check) {
+                check = document.createElement('span');
+                check.className = 'selection-check';
+                check.textContent = '✓';
+                check.setAttribute('aria-hidden', 'true');
+                photo.appendChild(check);
+            } else if (!state.selectedIds.has(id) && check) {
+                check.remove();
+            }
+
+            updateSelectionUI();
+            return;
+        }
+
+        openLb(idx);
+    });
+
+
+    
+    $('search').addEventListener('input', e => {
+        searchRequestId++;
+
+        abortRequest('search');
+        abortRequest('pagination');
+
+        state.searchLoading = false;
+        state.paginationLoading = false;
+
+        doSearch(e.target.value);
+    });
+
+    $('searchClear')?.addEventListener('click', () => {
+        const search = $('search');
+        if (!search) return;
+
+        searchRequestId++;
+
+        abortRequest('search');
+        abortRequest('pagination');
+
+        state.searchLoading = true;
+        state.paginationLoading = false;
+
+        search.value = '';
+
+        doSearch('');
+        search.focus();
+    });
+
+    $('rescan').addEventListener('click', rescan);
+    $('lbClose').addEventListener('click', closeLb);
+    $('lbPrev').addEventListener('click', () => navLb(-1));
+    $('lbNext').addEventListener('click', () => navLb(1));
+    $('lbInfo').addEventListener('click', () => state.infoPanelOpen ? hideInfo() : showInfo());
+    $('lbDelete').addEventListener('click', showDeleteModal);
+    $('lbDownload').addEventListener('click', downloadPhoto);
+    $('infoClose').addEventListener('click', hideInfo);
+    $('scrollTop').addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+
+    $('deleteCancel').addEventListener('click', hideDeleteModal);
+    $('deleteConfirm').addEventListener('click', confirmDelete);
+    $('deleteModal').addEventListener('click', e => {
+        if (e.target === $('deleteModal')) hideDeleteModal();
+    });
+
+    $('lbContent').addEventListener('click', e => {
+        if (e.target === $('lbContent')) closeLb();
+    });
+
+    document.addEventListener('keydown', e => {
+        if ($('deleteModal').classList.contains('active')) {
+            if (e.key === 'Escape') hideDeleteModal();
+            else if (e.key === 'Enter') confirmDelete();
+            return;
+        }
+        
+        if ($('lightbox').classList.contains('active')) {
+            if (e.key === 'Escape') {
+                if (state.infoPanelOpen) hideInfo();
+                else closeLb();
+            }
+            else if (e.key === 'ArrowLeft') navLb(-1);
+            else if (e.key === 'ArrowRight') navLb(1);
+            else if (e.key === 'i') {
+                state.infoPanelOpen ? hideInfo() : showInfo();
+            }
+            else if (e.key === 'Delete' || e.key === 'Backspace') {
+                e.preventDefault();
+                showDeleteModal();
+            }
+            return;
+        }
+        
+        if (e.key === '/' && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            $('search').focus();
+        }
+    });
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchMoved = false;
+
+    $('lbContent').addEventListener('touchstart', e => {
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        touchMoved = false;
+    }, { passive: true });
+
+    $('lbContent').addEventListener('touchmove', e => {
+        touchMoved = true;
+    }, { passive: true });
+
+    $('lbContent').addEventListener('touchend', e => {
+        if (!touchMoved) return;
+        
+        const dx = touchStartX - e.changedTouches[0].clientX;
+        const dy = touchStartY - e.changedTouches[0].clientY;
+        
+        if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 60) {
+            navLb(dx > 0 ? 1 : -1);
+        }
+    }, { passive: true });
+
+    const lbContent = $('lbContent');
+    const lbImg = $('lbImg');
+
+    const MIN_ZOOM = 1;
+    const MAX_ZOOM = 5;
+    const ZOOM_STEP = 1.15;
+
+    function applyZoom() {
+        const isRotated = state.rotation % 180 !== 0;
+
+        const rect = lbContent.getBoundingClientRect();
+
+        const width = lbImg.naturalWidth;
+        const height = lbImg.naturalHeight;
+
+        const displayWidth = isRotated ? height : width;
+        const displayHeight = isRotated ? width : height;
+
+        const fitScale = Math.min(
+            rect.width * 0.95 / displayWidth,
+            rect.height * 0.95 / displayHeight
+        );
+
+        const scale = state.zoom * (isRotated ? fitScale / (
+            Math.min(
+                rect.width / width,
+                rect.height / height
+            )
+        ) : 1);
+
+        lbImg.style.transform =
+            `translate(${state.panX}px, ${state.panY}px) ` +
+            `rotate(${state.rotation}deg) ` +
+            `scale(${scale})`;
+
+        lbImg.classList.toggle('zoomed', state.zoom > MIN_ZOOM);
+        lbImg.classList.toggle('dragging', state.dragging);
+    }
+    
+
+    function resetZoom() {
+        state.zoom = 1;
+        state.rotation = 0;
+        state.panX = 0;
+        state.panY = 0;
+        state.dragging = false;
+        lbImg.style.transform = '';
+        lbImg.classList.remove('zoomed', 'dragging');
+    }
+
+    lbContent.addEventListener('wheel', e => {
+        if (!$('lightbox').classList.contains('active')) return;
+
+        e.preventDefault();
+
+        const oldZoom = state.zoom || 1;
+        const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+        const newZoom = Math.min(
+            MAX_ZOOM,
+            Math.max(MIN_ZOOM, oldZoom * factor)
+        );
+
+        if (newZoom === oldZoom) return;
+
+        const rect = lbContent.getBoundingClientRect();
+        const pointerX = e.clientX - rect.left - rect.width / 2;
+        const pointerY = e.clientY - rect.top - rect.height / 2;
+
+        state.panX = pointerX - (pointerX - state.panX) * (newZoom / oldZoom);
+        state.panY = pointerY - (pointerY - state.panY) * (newZoom / oldZoom);
+        state.zoom = newZoom;
+
+        if (state.zoom === MIN_ZOOM) {
+            state.panX = 0;
+            state.panY = 0;
+        }
+
+        applyZoom();
+    }, { passive: false });
+    $('lbRotate').addEventListener('click', () => {
+        state.rotation = (state.rotation + 90) % 360;
+        applyZoom();
+    });
+    function downloadPhoto() {
+        const p = state.photos[state.idx];
+        if (!p) return;
+
+        const link = document.createElement('a');
+
+        link.href = '/image/' + encodeURIComponent(p.id);
+        link.download = p.filename || 'photo';
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    }
+
+    lbImg.addEventListener('pointerdown', e => {
+        if (state.zoom <= MIN_ZOOM || e.button !== 0) return;
+
+        e.preventDefault();
+
+        state.dragging = true;
+        state.dragStartX = e.clientX;
+        state.dragStartY = e.clientY;
+        state.dragOriginX = state.panX;
+        state.dragOriginY = state.panY;
+
+        lbImg.setPointerCapture(e.pointerId);
+        applyZoom();
+    });
+
+    lbImg.addEventListener('pointermove', e => {
+        if (!state.dragging) return;
+
+        state.panX = state.dragOriginX + e.clientX - state.dragStartX;
+        state.panY = state.dragOriginY + e.clientY - state.dragStartY;
+
+        applyZoom();
+    });
+
+    function stopDragging() {
+        if (!state.dragging) return;
+        state.dragging = false;
+        applyZoom();
+    }
+
+    lbImg.addEventListener('pointerup', stopDragging);
+    lbImg.addEventListener('pointercancel', stopDragging);
+    lbImg.addEventListener('lostpointercapture', stopDragging);
+
+    (async () => {
+        console.log('[Photos] Initializing gallery');
+
+        try {
+            console.time('[Photos] Initial API request');
+            const data = await fetchPhotos(1);
+            console.timeEnd('[Photos] Initial API request')
+
+            console.log('[Photos] API response:', data);
+
+            state.total = data.total || 0;
+            state.hasMore =
+                (data.photos?.length || 0) < state.total;
+
+            render(data.photos || []);
+
+            console.log('[Photos] Rendered:', data.photos?.length || 0);
+
+            await updateStats();
+        } catch (e) {
+            console.error('[Photos] Initialization failed:', e);
+            $('empty').classList.add('active');
+            showToast('Failed to load photos: ' + e.message, 'error');
+        }
+    })();
+
+
+</script>
+
+{% endblock %}
