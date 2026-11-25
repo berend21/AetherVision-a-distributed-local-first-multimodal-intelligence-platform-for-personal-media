@@ -1,4 +1,3 @@
-import sqlite3
 import json
 import hashlib
 from pathlib import Path
@@ -16,7 +15,24 @@ from dotenv import load_dotenv
 import ctypes
 from flask_wtf.csrf import generate_csrf
 from scripts.location_resolver import LocationResolver
-from collections import OrderedDict
+import database
+import subprocess
+
+
+from database import (get_db, LRUCache, DatabasePool, init_db, safe_json_load, extract_searchable_json, build_fts_query, now_iso, update_photo_fts, db_lock, thumb_cache)
+from google_photos_metadata import extract_and_merge
+
+FFPROBE_PATH = r"H:\Imagesorter\ffmpeg-2026-11-19-git-01ca75d350-full_build\ffmpeg-2026-11-19-git-01ca75d350-full_build\bin\ffprobe.exe"
+FFMPEG_PATH = r"H:\Imagesorter\ffmpeg-2026-11-19-git-01ca75d350-full_build\ffmpeg-2026-11-19-git-01ca75d350-full_build\bin\ffmpeg.exe"
+if not os.path.isfile(FFPROBE_PATH):
+    raise FileNotFoundError(f"FFprobe not found: {FFPROBE_PATH}")
+
+if not os.path.isfile(FFMPEG_PATH):
+    raise FileNotFoundError(f"FFmpeg not found: {FFMPEG_PATH}")
+
+
+print("FFprobe:", FFPROBE_PATH)
+print("FFmpeg:", FFMPEG_PATH)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -29,6 +45,7 @@ logger = logging.getLogger("imagesorter")
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tiff'}
+VIDEO_EXTENSIONS = {'.mp4','.mov','.avi', '.mkv', '.webm', '.m4v','.wmv', '.3gp'}
 THUMB_SIZE = (300, 300)
 WEBP_QUALITY = 75
 PER_PAGE = 100
@@ -38,597 +55,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = False
 INDEX_WORKERS = int(os.environ.get("INDEX_WORKERS", max(1, min(2, os.cpu_count() or 2))))
 PMTILES_FILE = r"H:\Imagesorter\images\data\world-europe.pmtiles"
 
-db_lock = Lock()
 
-
-def get_db(db_path: Path):
-    conn = sqlite3.connect(
-        str(db_path),
-        timeout=10,
-        isolation_level=None,
-        check_same_thread=False,
-    )
-
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=10000")
-    conn.execute("PRAGMA temp_store=MEMORY")
-    conn.execute("PRAGMA cache_size=-16000")
-    conn.execute("PRAGMA mmap_size=268435456")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA synchronous = NORMAL")
-
-    return conn
-
-class LRUCache:
-    def __init__(self, max_size_mb=200):
-        self.max_size = max_size_mb * 1024 * 1024
-        self.cache = OrderedDict()
-        self.current_size = 0
-        self.lock = Lock()
-
-    @staticmethod
-    def _size(value):
-        return len(value) if isinstance(value, bytes) else 100
-
-    def get(self, key):
-        with self.lock:
-            value = self.cache.get(key)
-
-            if value is not None:
-                self.cache.move_to_end(key)
-
-            return value
-
-    def delete(self, key):
-        with self.lock:
-            value = self.cache.pop(key, None)
-
-            if value is not None:
-                self.current_size -= self._size(value)
-
-    def set(self, key, value):
-        size = self._size(value)
-
-        if size > self.max_size:
-            self.delete(key)
-            return
-
-        with self.lock:
-            old = self.cache.pop(key, None)
-
-            if old is not None:
-                self.current_size -= self._size(old)
-
-            while (
-                self.current_size + size > self.max_size
-                and self.cache
-            ):
-                _, oldest = self.cache.popitem(last=False)
-                self.current_size -= self._size(oldest)
-
-            self.cache[key] = value
-            self.current_size += size
-
-    def clear(self):
-        with self.lock:
-            self.cache.clear()
-            self.current_size = 0
-
-    def stats(self):
-        with self.lock:
-            return {
-                "items": len(self.cache),
-                "size_mb": round(
-                    self.current_size / 1024 / 1024, 2
-                ),
-                "max_size_mb": round(
-                    self.max_size / 1024 / 1024, 2
-                )
-            }
-
-
-class DatabasePool:
-
-    def __init__(self, db_path: Path, max_connections=5):
-
-        self.db_path = db_path
-        self.max_connections = max_connections
-
-        self.lock = Lock()
-        self.connections = []
-
-        # Actually limit simultaneous database connections.
-        self.connection_slots = BoundedSemaphore(max_connections)
-
-    def get_connection(self):
-        self.connection_slots.acquire()
-        try:
-            with self.lock:
-                if self.connections:
-                    return self.connections.pop()
-            return get_db(self.db_path)
-
-        except Exception:
-            self.connection_slots.release()
-            raise
-    def return_connection(self, conn):
-        try:
-            try:
-                if conn.in_transaction:
-                    conn.rollback()
-            except sqlite3.Error:
-                conn.close()
-                return
-            with self.lock:
-
-                if len(self.connections) < self.max_connections:
-                    self.connections.append(conn)
-                else:
-                    conn.close()
-        finally:
-            self.connection_slots.release()
-
-    def execute(self, query, params=None):
-        conn = self.get_connection()
-        try:
-            return conn.execute(
-                query,
-                params or ()
-            ).fetchall()
-
-        finally:
-            self.return_connection(conn)
-    def execute_one(self, query, params=None):
-        conn = self.get_connection()
-        try:
-            return conn.execute(
-                query,
-                params or ()
-            ).fetchone()
-
-        finally:
-            self.return_connection(conn)
-    def execute_write(self, query, params=None):
-        with db_lock:
-            conn = self.get_connection()
-            try:
-                conn.execute(
-                    query,
-                    params or ()
-                )
-                return True
-            finally:
-                self.return_connection(conn)
-
-    def execute_many(self, query, params_list):
-        with db_lock:
-            conn = self.get_connection()
-            try:
-                conn.executemany(
-                    query,
-                    params_list
-                )
-                return True
-            finally:
-                self.return_connection(conn)
-
-    def close_all(self):
-        with self.lock:
-            while self.connections:
-                conn = self.connections.pop()
-
-                try:
-                    conn.close()
-                except sqlite3.Error:
-                    logger.exception("Failed to close database connection")
-
-db_pool = None
-thumb_cache = LRUCache(max_size_mb=200)
-
-
-def init_db(db_path: Path):
-
-    conn = get_db(db_path)
-
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-
-        has_photos = conn.execute("""
-            SELECT name
-            FROM sqlite_master
-            WHERE type='table'
-            AND name='photos'
-        """).fetchone()
-
-        if not has_photos:
-            logger.info("Creating new photo database")
-
-            conn.execute("""
-                CREATE TABLE photos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    file_hash TEXT NOT NULL,
-                    filename TEXT NOT NULL,
-                    filepath TEXT NOT NULL,
-                    file_size INTEGER,
-                    file_modified TEXT,
-                    width INTEGER,
-                    height INTEGER,
-                    date_taken TEXT,
-                    manual_date TEXT,
-                    exif_camera TEXT,
-                    exif_gps_lat REAL,
-                    exif_gps_lon REAL,
-                    city_name TEXT,
-                    subdivision_name TEXT,
-                    region_name TEXT,
-                    country_name TEXT,
-                    country_code TEXT,
-                    location_distance_km REAL,
-                    location_type TEXT,
-                    location_indexed_at TEXT,
-                    thumb_webp BLOB,
-                    dominant_color TEXT,
-                    tags_json TEXT,
-                    categories_json TEXT,
-                    caption TEXT,
-                    detailed_caption TEXT,
-                    ocr_text TEXT,
-                    embedding BLOB,
-                    indexed_at TEXT,
-                    processed_at TEXT
-                )
-            """)
-        else:
-            logger.info("Using existing photo database")
-
-        indexes = [
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS
-            idx_photos_filepath_unique
-            ON photos(filepath)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_photos_file_hash
-            ON photos(file_hash)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_filename
-            ON photos(filename)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_date_taken
-            ON photos(date_taken)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_file_modified
-            ON photos(file_modified)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_photos_date_id
-            ON photos(date_taken, id)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_photos_gps
-            ON photos(exif_gps_lat, exif_gps_lon)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_photos_city
-            ON photos(city_name)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_photos_country
-            ON photos(country_name)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_photos_filename_nocase
-            ON photos(filename COLLATE NOCASE)
-            """
-        ]
-
-        for statement in indexes:
-            conn.execute(statement)
-
-        # ==========================================
-        # FTS5 CHECK
-        # ==========================================
-
-        has_fts = conn.execute("""
-            SELECT name
-            FROM sqlite_master
-            WHERE type='table'
-            AND name='photos_fts'
-        """).fetchone()
-
-        rebuild_fts = False
-
-        if has_fts:
-
-            fts_columns = {
-                row['name']
-                for row in conn.execute(
-                    "PRAGMA table_info(photos_fts)"
-                ).fetchall()
-            }
-
-            required_columns = {
-                'filename',
-                'caption',
-                'detailed_caption',
-                'ocr_text',
-                'tags_text',
-                'categories_text',
-                'city_name',
-                'subdivision_name',
-                'region_name',
-                'country_name'
-            }
-
-            if not required_columns.issubset(fts_columns):
-                logger.warning("FTS schema outdated; rebuilding")
-                rebuild_fts = True
-
-        else:
-            rebuild_fts = True
-
-        # ==========================================
-        # FTS5 REBUILD
-        # ==========================================
-
-        conn.execute("BEGIN IMMEDIATE")
-
-        try:
-
-            if rebuild_fts:
-
-                logger.info("Creating/rebuilding FTS5 index")
-
-                conn.execute("DROP TABLE IF EXISTS photos_fts")
-
-                conn.execute("""
-                    CREATE VIRTUAL TABLE photos_fts USING fts5(
-                        filename,
-                        caption,
-                        detailed_caption,
-                        ocr_text,
-                        tags_text,
-                        categories_text,
-                        city_name,
-                        subdivision_name,
-                        region_name,
-                        country_name
-                    )
-                """)
-
-                rows = conn.execute("""
-                    SELECT
-                        id,
-                        filename,
-                        caption,
-                        detailed_caption,
-                        ocr_text,
-                        tags_json,
-                        categories_json,
-                        city_name,
-                        subdivision_name,
-                        region_name,
-                        country_name
-                    FROM photos
-                """).fetchall()
-
-                batch = []
-
-                for row in rows:
-
-                    tags_text = extract_searchable_json(
-                        row['tags_json']
-                    )
-
-                    categories_text = extract_searchable_json(
-                        row['categories_json']
-                    )
-
-                    batch.append((
-                        row['id'],
-                        row['filename'] or '',
-                        row['caption'] or '',
-                        row['detailed_caption'] or '',
-                        row['ocr_text'] or '',
-                        tags_text,
-                        categories_text,
-                        row['city_name'] or '',
-                        row['subdivision_name'] or '',
-                        row['region_name'] or '',
-                        row['country_name'] or ''
-                    ))
-
-                if batch:
-                    conn.executemany("""
-                        INSERT INTO photos_fts (
-                            rowid,
-                            filename,
-                            caption,
-                            detailed_caption,
-                            ocr_text,
-                            tags_text,
-                            categories_text,
-                            city_name,
-                            subdivision_name,
-                            region_name,
-                            country_name
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, batch)
-
-                logger.info(
-                    "FTS5 rebuild complete: %s records",
-                    len(batch)
-                )
-
-            conn.execute("COMMIT")
-
-        except Exception:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-
-            logger.exception("FTS5 initialization failed")
-            raise
-
-    except Exception:
-        logger.exception("Database initialization failed")
-        raise
-
-    finally:
-        conn.close()
-
-    logger.info("Database initialization successful")
-
-            
-def safe_json_load(value, default=None):
-
-    if default is None:
-        default = {}
-
-    if not value:
-        return default
-
-    try:
-        return json.loads(value)
-
-    except (ValueError, TypeError):
-        return default
-
-def extract_searchable_json(value):
-
-    if not value:
-        return ''
-
-    try:
-        parsed = json.loads(value)
-    except (ValueError, TypeError):
-        return ''
-
-    parts = []
-
-
-    def collect(item):
-
-        if isinstance(item, dict):
-            for key, val in item.items():
-                parts.append(str(key))
-                collect(val)
-
-        elif isinstance(item, list):
-            for val in item:
-                collect(val)
-
-        elif item is not None:
-            parts.append(str(item))
-
-    collect(parsed)
-
-    return ' '.join(parts)
-def build_fts_query(search):
-
-    if not search:
-        return None
-
-    search = search.strip()
-
-    if not search:
-        return None
-
-    terms = search.split()
-
-    if not terms:
-        return None
-
-    terms = [
-        '"' + term.replace('"', '""') + '"'
-        for term in terms
-    ]
-
-    return " AND ".join(terms)
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def update_photo_fts(conn, photo_id):
-
-    row = conn.execute("""
-        SELECT
-            id,
-            filename,
-            caption,
-            detailed_caption,
-            ocr_text,
-            tags_json,
-            categories_json,
-            city_name,
-            subdivision_name,
-            region_name,
-            country_name
-        FROM photos
-        WHERE id = ?
-    """, (photo_id,)).fetchone()
-
-    if not row:
-        return
-
-    def extract_keys(value):
-        if not value:
-            return ''
-
-        try:
-            parsed = json.loads(value)
-
-            if isinstance(parsed, dict):
-                return ' '.join(str(k) for k in parsed.keys())
-
-            if isinstance(parsed, list):
-                return ' '.join(str(item) for item in parsed)
-
-            return str(parsed)
-
-        except (ValueError, TypeError):
-            return ''
-
-    tags_text = extract_searchable_json(row['tags_json'])
-
-    categories_text = extract_searchable_json(row['categories_json'])
-
-    conn.execute("""
-        DELETE FROM photos_fts WHERE rowid = ?
-    """, (photo_id,))
-
-    conn.execute("""
-        INSERT INTO photos_fts (
-            rowid,
-            filename,
-            caption,
-            detailed_caption,
-            ocr_text,
-            tags_text,
-            categories_text,
-            city_name,
-            subdivision_name,
-            region_name,
-            country_name
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        row['id'],
-        row['filename'] or '',
-        row['caption'] or '',
-        row['detailed_caption'] or '',
-        row['ocr_text'] or '',
-        tags_text,
-        categories_text,
-        row['city_name'] or '',
-        row['subdivision_name'] or '',
-        row['region_name'] or '',
-        row['country_name'] or ''
-    ))
 
 
 def extract_dominant_color(img: Image.Image) -> str:
@@ -945,7 +372,7 @@ class Indexer:
         return sorted(images)
 
     def get_indexed(self) -> dict:
-        rows = db_pool.execute(
+        rows = database.db_pool.execute(
             "SELECT id, file_hash, filepath, file_size, file_modified FROM photos"
         )
         return {
@@ -1047,6 +474,8 @@ class Indexer:
             original.load()
 
             exif = extract_exif_safe(original)
+            #if no exif check if jsonfile
+            exif = extract_and_merge(path, exif)
 
             if (
                 exif.get('gps_lat') is not None
@@ -1175,7 +604,7 @@ class Indexer:
                     fhash = hashlib.sha256(file_data).hexdigest()
 
                     if fhash == info['file_hash']:
-                        db_pool.execute_write(
+                        database.db_pool.execute_write(
                             """
                             UPDATE photos
                             SET file_modified=?, file_size=?
@@ -1495,7 +924,7 @@ class Indexer:
                     continue
 
                 # Already used by another image in the database?
-                existing = db_pool.execute_one("""
+                existing = database.db_pool.execute_one("""
                     SELECT id
                     FROM photos
                     WHERE filename = ? COLLATE NOCASE
@@ -1512,6 +941,286 @@ class Indexer:
 
                 return candidate
 
+
+class VideoIndexer:
+
+    def __init__(self, folder: Path, db_path: Path):
+        self.folder = folder
+        self.db_path = db_path
+        self.lock = Lock()
+
+    def scan_videos(self):
+        videos = []
+
+        for root, _, filenames in os.walk(self.folder):
+            for filename in filenames:
+
+                ext = Path(filename).suffix.lower()
+
+                if ext in VIDEO_EXTENSIONS:
+                    videos.append(Path(root) / filename)
+
+        return sorted(videos)
+
+    def get_metadata(self, path):
+
+        result = subprocess.run(
+            [
+                FFPROBE_PATH,
+                "-v", "error",
+                "-show_entries",
+                "format=duration:format_tags=creation_time:stream=width,height,codec_type,codec_name",
+                "-of", "json",
+                str(path)
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30
+        )
+
+        metadata = json.loads(result.stdout)
+
+        video_stream = next(
+            (
+                stream for stream in metadata.get("streams", [])
+                if stream.get("codec_type") == "video"
+            ),
+            None
+        )
+
+        if not video_stream:
+            raise ValueError("No video stream found")
+
+        duration = float(
+            metadata.get("format", {}).get("duration", 0)
+        )
+
+        creation_time = (
+            metadata.get("format", {})
+            .get("tags", {})
+            .get("creation_time")
+        )
+
+        if creation_time:
+            try:
+                parsed = datetime.fromisoformat(
+                    creation_time.replace("Z", "+00:00")
+                )
+
+                date_taken = parsed.isoformat()
+
+            except ValueError:
+                date_taken = None
+        else:
+            date_taken = None
+
+        return {
+            "duration": duration,
+            "width": video_stream.get("width"),
+            "height": video_stream.get("height"),
+            "codec": video_stream.get("codec_name"),
+            "date_taken": date_taken
+        }
+
+    def make_thumbnail(self, path):
+
+        if not os.path.isfile(FFMPEG_PATH):
+            raise FileNotFoundError(
+                f"FFmpeg executable does not exist: {FFMPEG_PATH}"
+            )
+
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                f"Video file does not exist: {path}"
+            )
+
+        command = [
+            FFMPEG_PATH,
+            "-y",
+            "-ss", "00:00:01",
+            "-i", str(path),
+            "-frames:v", "1",
+            "-vf", "scale=300:300:force_original_aspect_ratio=decrease",
+            "-c:v", "libwebp",
+            "-quality", "75",
+            "-f", "image2pipe",
+            "-"
+        ]
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=60,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+
+        except FileNotFoundError as e:
+            logger.exception(
+                "Cannot start FFmpeg. Executable=%s, exists=%s",
+                FFMPEG_PATH,
+                os.path.isfile(FFMPEG_PATH)
+            )
+            raise
+
+        if result.returncode != 0:
+            error = result.stderr.decode(
+                "utf-8",
+                errors="replace"
+            )
+
+            raise RuntimeError(
+                f"FFmpeg failed ({result.returncode}): {error}"
+            )
+
+        if not result.stdout:
+            raise RuntimeError(
+                "FFmpeg returned no thumbnail data"
+            )
+
+        return result.stdout
+
+    def quick_scan(self):
+
+        if not self.lock.acquire(blocking=False):
+            return 0
+
+        try:
+            return self._quick_scan()
+
+        finally:
+            self.lock.release()
+
+    def _quick_scan(self):
+
+        paths = self.scan_videos()
+
+        existing_rows = database.db_pool.execute("""
+            SELECT id, filepath, file_size, file_modified
+            FROM videos
+        """)
+
+        existing = {
+            row["filepath"]: dict(row)
+            for row in existing_rows
+        }
+
+        found = set()
+        new_count = 0
+
+        for path in paths:
+
+            try:
+                filepath = str(path.absolute())
+                found.add(filepath)
+
+                stat = path.stat()
+
+                modified = datetime.fromtimestamp(
+                    stat.st_mtime
+                ).isoformat()
+
+                old = existing.get(filepath)
+
+                if old and (
+                    old["file_size"] == stat.st_size
+                    and old["file_modified"] == modified
+                ):
+                    continue
+
+                file_data, error = safe_read_file(filepath)
+
+                if file_data is None:
+                    raise OSError(error)
+
+                file_hash = hashlib.sha256(file_data).hexdigest()
+
+                metadata = self.get_metadata(path)
+                thumbnail = self.make_thumbnail(path)
+
+                date_taken = metadata.get("date_taken")
+
+                database.db_pool.execute_write("""
+                    INSERT INTO videos (
+                        filename,
+                        filepath,
+                        file_hash,
+                        file_size,
+                        file_modified,
+                        duration,
+                        width,
+                        height,
+                        codec,
+                        date_taken,
+                        thumb_webp,
+                        indexed_at,
+                        processed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+                    ON CONFLICT(filepath) DO UPDATE SET
+                        filename=excluded.filename,
+                        file_hash=excluded.file_hash,
+                        file_size=excluded.file_size,
+                        file_modified=excluded.file_modified,
+                        duration=excluded.duration,
+                        width=excluded.width,
+                        height=excluded.height,
+                        codec=excluded.codec,
+                        date_taken=excluded.date_taken,
+                        thumb_webp=excluded.thumb_webp,
+                        indexed_at=excluded.indexed_at,
+                        processed_at=excluded.processed_at
+                """, (
+                    path.name,
+                    filepath,
+                    file_hash,
+                    stat.st_size,
+                    modified,
+                    metadata["duration"],
+                    metadata["width"],
+                    metadata["height"],
+                    metadata["codec"],
+                    date_taken,
+                    thumbnail,
+                    now_iso(),
+                    now_iso()
+                ))
+
+                new_count += 1
+
+                logger.info("Indexed video: %s", path.name)
+
+            except Exception:
+                logger.exception(
+                    "Failed to index video: %s",
+                    path
+                )
+
+        # Remove videos that no longer exist.
+        missing = set(existing.keys()) - found
+
+        if missing:
+            with db_lock:
+                conn = get_db(self.db_path)
+
+                try:
+                    conn.executemany(
+                        "DELETE FROM videos WHERE filepath = ?",
+                        [(filepath,) for filepath in missing]
+                    )
+                finally:
+                    conn.close()
+
+        logger.info(
+            "Video scan complete: %s indexed, %s removed",
+            new_count,
+            len(missing)
+        )
+
+        return new_count
 
 
 def create_app(folder: Path, db_path: Path):
@@ -1571,7 +1280,7 @@ def create_app(folder: Path, db_path: Path):
         }), 400
 
     init_db(db_path)
-    db_pool = DatabasePool(db_path)
+    database.db_pool = DatabasePool(db_path)
 
 
     scripts_dir = Path(__file__).resolve().parent / "scripts"
@@ -1584,6 +1293,7 @@ def create_app(folder: Path, db_path: Path):
     location_resolver.load()
 
     indexer = Indexer(folder, db_path, location_resolver)
+    video_indexer = VideoIndexer(folder, db_path)
 
     @app.route('/api/photos')
     def api_photos():
@@ -1601,7 +1311,7 @@ def create_app(folder: Path, db_path: Path):
 
                 if not fts_query:
                     search = ''
-                count_row = db_pool.execute_one(
+                count_row = database.db_pool.execute_one(
                     """
                     SELECT COUNT(*) AS cnt
                     FROM photos_fts
@@ -1611,7 +1321,7 @@ def create_app(folder: Path, db_path: Path):
                 )
 
                 total = count_row["cnt"] if count_row else 0
-                rows = db_pool.execute(
+                rows = database.db_pool.execute(
                     """
                     SELECT
                         p.id,
@@ -1671,12 +1381,12 @@ def create_app(folder: Path, db_path: Path):
                 else:
                     order_by = "id DESC"
 
-                total_row = db_pool.execute_one(
+                total_row = database.db_pool.execute_one(
                     "SELECT COUNT(*) AS cnt FROM photos"
                 )
                 total = total_row["cnt"] if total_row else 0
 
-                rows = db_pool.execute(
+                rows = database.db_pool.execute(
                     f"""
                     SELECT id, filename, width, height, date_taken, manual_date,
                         file_modified, dominant_color,
@@ -1722,7 +1432,7 @@ def create_app(folder: Path, db_path: Path):
     @app.route('/api/photo/<int:photo_id>', methods=['GET'])
     def api_photo(photo_id):
         try:
-            row = db_pool.execute_one("""
+            row = database.db_pool.execute_one("""
                 SELECT
                     id,
                     file_hash,
@@ -1821,7 +1531,7 @@ def create_app(folder: Path, db_path: Path):
         try:
             id_list = [int(i) for i in ids.split(',')[:100]]
             placeholders = ','.join('?' * len(id_list))
-            rows = db_pool.execute(f"""
+            rows = database.db_pool.execute(f"""
                 SELECT id, filename, width, height, date_taken, manual_date, file_modified,
                        dominant_color, thumb_webp IS NOT NULL as has_webp,
                        tags_json IS NOT NULL as has_tags
@@ -1955,11 +1665,11 @@ def create_app(folder: Path, db_path: Path):
     @app.route('/api/stats')
     def api_stats():
         try:
-            total = db_pool.execute_one("SELECT COUNT(*) as cnt FROM photos")
-            tagged = db_pool.execute_one(
+            total = database.db_pool.execute_one("SELECT COUNT(*) as cnt FROM photos")
+            tagged = database.db_pool.execute_one(
                 "SELECT COUNT(*) as cnt FROM photos WHERE tags_json IS NOT NULL"
             )
-            date_range = db_pool.execute_one("""
+            date_range = database.db_pool.execute_one("""
                 SELECT MIN(COALESCE(date_taken, manual_date, file_modified)) as oldest,
                        MAX(COALESCE(date_taken, manual_date, file_modified)) as newest
                 FROM photos
@@ -1982,7 +1692,7 @@ def create_app(folder: Path, db_path: Path):
         precision = max(2, min(precision, 5))
 
         try:
-            rows = db_pool.execute("""
+            rows = database.db_pool.execute("""
                 SELECT
                     ROUND(exif_gps_lat, ?) AS lat,
                     ROUND(exif_gps_lon, ?) AS lon,
@@ -2048,7 +1758,7 @@ def create_app(folder: Path, db_path: Path):
             step = 10 ** (-precision)
             half_step = step / 2
 
-            rows = db_pool.execute("""
+            rows = database.db_pool.execute("""
                 SELECT
                     id,
                     filename,
@@ -2089,27 +1799,177 @@ def create_app(folder: Path, db_path: Path):
         except Exception:
             app.logger.exception('Place photos API failed')
             return jsonify({'error': 'Failed to load location photos'}), 500
+    
+    @app.route('/api/videos')
+    def api_videos():
 
-   # @app.route("/videos")
-   # def videos_page():
-      #  return render_template("videos.html")
+        try:
+            rows = database.db_pool.execute("""
+                SELECT
+                    id,
+                    filename,
+                    filepath,
+                    file_size,
+                    file_modified,
+                    duration,
+                    width,
+                    height,
+                    date_taken,
+                    thumb_webp IS NOT NULL AS has_thumbnail
+                FROM videos
+                ORDER BY date_taken DESC, id DESC
+            """)
+
+            return jsonify({
+                'videos': [dict(row) for row in rows],
+                'total': len(rows)
+            })
+
+        except Exception:
+            logger.exception("Video API failed")
+
+            return jsonify({
+                'videos': [],
+                'total': 0,
+                'error': 'Failed to load videos'
+            }), 500
+    @app.route('/api/video/<int:video_id>')
+    def api_video(video_id):
+
+        try:
+            row = database.db_pool.execute_one("""
+                SELECT
+                    id,
+                    filename,
+                    filepath,
+                    file_hash,
+                    file_size,
+                    file_modified,
+                    duration,
+                    width,
+                    height,
+                    codec,
+                    date_taken,
+                    indexed_at,
+                    processed_at
+                FROM videos
+                WHERE id = ?
+            """, (video_id,))
+
+            if not row:
+                return jsonify({
+                    'success': False,
+                    'error': 'Video not found'
+                }), 404
+
+            video = dict(row)
+
+            video['file_accessible'] = safe_check_exists(
+                video['filepath']
+            )
+
+            video.pop('filepath', None)
+
+            return jsonify({
+                'success': True,
+                'video': video
+            })
+
+        except Exception:
+            logger.exception("Video details API failed")
+
+            return jsonify({
+                'success': False,
+                'error': 'Failed to load video'
+            }), 500
+    @app.route('/video-thumbnail/<int:video_id>')
+    def serve_video_thumbnail(video_id):
+
+        row = database.db_pool.execute_one("""
+            SELECT thumb_webp
+            FROM videos
+            WHERE id = ?
+        """, (video_id,))
+
+        if not row or not row['thumb_webp']:
+            abort(404)
+
+        return Response(
+            row['thumb_webp'],
+            mimetype='image/webp',
+            headers={
+                'Cache-Control': 'private, max-age=3600'
+            }
+        )
+
+    @app.route('/video/<int:video_id>')
+    def serve_video(video_id):
+
+        row = database.db_pool.execute_one("""
+            SELECT filepath
+            FROM videos
+            WHERE id = ?
+        """, (video_id,))
+
+        if not row:
+            abort(404)
+
+        filepath = row['filepath']
+
+        if not filepath or not safe_check_exists(filepath):
+            abort(404)
+
+        return send_file(
+            filepath,
+            conditional=True,
+            etag=True,
+            max_age=0
+        )
+    @app.route("/videos")
+    def videos_page():
+        return render_template(
+            "videos.html",
+            active_section="videos"
+        )
+    
     @app.route('/places')
     def places():
         return render_template('places.html')  
 
+    @app.route('/albums')
+    def albums():
+        return render_template('albums.html')
+
     @app.route('/api/rescan', methods=['POST'])
     def api_rescan():
         try:
-            count = indexer.quick_scan(show_progress=True)
-            return jsonify({'new_images': count, 'success': True})
+            # Scan photos
+            image_count = indexer.quick_scan(show_progress=True)
+
+            # Scan videos
+            video_count = video_indexer.quick_scan()
+
+            return jsonify({
+                'success': True,
+                'new_images': image_count,
+                'new_videos': video_count,
+                'total_new': image_count + video_count
+            })
+
         except Exception as e:
-            print(f"Rescan error: {e}")
-            return jsonify({'error': str(e), 'new_images': 0}), 500
+            logger.exception("Rescan error")
+
+            return jsonify({
+                'success': False,
+                'error': str(e),
+                'new_images': 0,
+                'new_videos': 0
+            }), 500
 
     
     @app.route('/api/debug/path/<int:photo_id>')
     def api_debug_path(photo_id):
-        row = db_pool.execute_one(
+        row = database.db_pool.execute_one(
             "SELECT id, filepath, filename FROM photos WHERE id = ?", (photo_id,)
         )
         if not row:
@@ -2188,7 +2048,7 @@ def create_app(folder: Path, db_path: Path):
             'Expires': '0'
         }
 
-        row = db_pool.execute_one(
+        row = database.db_pool.execute_one(
             "SELECT id FROM photos WHERE id = ?",
             (photo_id,)
         )
@@ -2206,7 +2066,7 @@ def create_app(folder: Path, db_path: Path):
                 headers=NO_CACHE_HEADERS
             )
 
-        row = db_pool.execute_one(
+        row = database.db_pool.execute_one(
             """
             SELECT thumb_webp, filepath
             FROM photos
@@ -2242,7 +2102,7 @@ def create_app(folder: Path, db_path: Path):
                         if oriented is not img:
                             oriented.close()
 
-                db_pool.execute_write(
+                database.db_pool.execute_write(
                     """
                     UPDATE photos
                     SET thumb_webp = ?
@@ -2286,7 +2146,7 @@ def create_app(folder: Path, db_path: Path):
     @app.route('/image/<int:photo_id>')
     def serve_image(photo_id):
         try:
-            row = db_pool.execute_one(
+            row = database.db_pool.execute_one(
                 "SELECT filepath, filename, file_hash FROM photos WHERE id = ?",
                 (photo_id,)
             )
@@ -2367,10 +2227,7 @@ def create_app(folder: Path, db_path: Path):
 
 
     def _try_find_and_read(filename: str, base_folder: Path) -> bytes | None:
-        """
-        Last-resort: walk the folder tree looking for a file by name.
-        If found, also update the DB with the correct path.
-        """
+
         try:
             for dirpath, _, filenames in os.walk(base_folder):
                 if filename in filenames:
@@ -2378,7 +2235,7 @@ def create_app(folder: Path, db_path: Path):
                     data, err = safe_read_file(found_path)
                     if data is not None:
 
-                        db_pool.execute_write(
+                        database.db_pool.execute_write(
                             "UPDATE photos SET filepath = ? WHERE filename = ?",
                             (found_path, filename)
                         )
@@ -2394,6 +2251,8 @@ def create_app(folder: Path, db_path: Path):
 
     print("Scanning...")
     indexer.quick_scan()
+    print("Scanning videos...")
+    video_indexer.quick_scan()
     indexer.background_scan(interval=INTERVAL_SCAN)
 
     return app
